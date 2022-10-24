@@ -7,32 +7,31 @@
 // is up to each source.
 
 use std::collections::BTreeMap;
-use std::ops::Index;
 use tokio::sync::mpsc;
+use uuid::Uuid;
+use yaml_rust::Yaml;
+
+mod cache;
+mod collection;
+mod errors;
+mod schema;
+mod terminator;
+
+pub(crate) mod segment;
+
+pub(crate) type Values = BTreeMap<String, Value>;
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Insert(BTreeMap<String, Value>),
-    Update(BTreeMap<String, Value>),
-    Delete(BTreeMap<String, Value>),
+    Insert(String, Values),
+    Update(String, Values),
+    Delete(String, Values),
+    SegmentExpired(String, Uuid),
 }
 
 impl Default for Event {
     fn default() -> Self {
-        Event::Insert(BTreeMap::default())
-    }
-}
-
-impl<'a> Index<&'a str> for Event {
-    type Output = Value;
-    fn index(&self, index: &'a str) -> &Self::Output {
-        let tree = match &*self {
-            Event::Insert(map) => map,
-            Event::Update(map) => map,
-            Event::Delete(map) => map,
-        };
-
-        &tree[index]
+        Event::Insert("undefined index".into(), Values::default())
     }
 }
 
@@ -49,13 +48,22 @@ impl Default for Value {
     }
 }
 
-pub fn listen() -> mpsc::Sender<Event> {
+pub fn listen(config: &Yaml) -> mpsc::Sender<Event> {
     let (sender, mut receiver) = mpsc::channel(10);
+    let mut segments = collection::new(config, sender.clone());
 
     tokio::spawn(async move {
         loop {
             match receiver.recv().await {
-                Some(e) => println!("Received {:?}", e),
+                Some(e) => match e {
+                    Event::Insert(index, data) => {
+                        segments.insert(&index, data).unwrap();
+                    }
+                    Event::SegmentExpired(index, id) => {
+                        segments.expired(&index, &id);
+                    }
+                    _ => unimplemented!("Not yet"),
+                },
                 None => {}
             }
         }

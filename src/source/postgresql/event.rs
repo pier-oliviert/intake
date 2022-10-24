@@ -5,9 +5,7 @@ use serde_json::Value as JSONValue;
 
 pub(crate) fn from_json(payload: &[u8]) -> Result<Vec<Event>, Error> {
     let mutations: Mutations = serde_json::from_slice(payload)?;
-    let events = mutations.mutations.into_iter().collect();
-
-    Ok(events)
+    Ok(mutations.mutations.into_iter().collect())
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -15,6 +13,7 @@ struct Mutations {
     #[serde(rename = "change")]
     mutations: Vec<Mutation>,
 }
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "kind")]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +44,7 @@ impl From<Mutation> for Event {
                 for (i, column) in columns.into_iter().enumerate() {
                     map.insert(column, Value::from((&types[i], &values[i])));
                 }
-                Event::Insert(map)
+                Event::Insert("test".into(), map)
             }
             _ => Self::default(),
         }
