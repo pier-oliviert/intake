@@ -29,17 +29,14 @@ impl Collection {
         match self.schemas.get_mut(index) {
             Some(schema) => {
                 if let Some(seg) = schema.segment() {
-                    println!("Adding data to existing segment: {}", &seg.uuid);
                     seg.add(data)?
                 } else {
                     let mut seg = segment::new(&schema, self.expiration.clone());
-                    println!("Creating new segment for existing schema: {}", &seg.uuid);
                     seg.add(data)?;
                     *schema.segment() = Some(seg);
                 }
             }
             None => {
-                println!("Creating new entry for index: {}", &index);
                 let mut schema = Schema::try_from((index, &data))?;
                 *schema.segment() = Some(segment::new(&schema, self.expiration.clone()));
                 self.schemas.insert(schema.name(), schema.into());
@@ -51,7 +48,8 @@ impl Collection {
     pub(crate) fn expired(&mut self, index: &str, id: &uuid::Uuid) {
         if let Some(schema) = self.schemas.get_mut(index) {
             if let Some(seg) = schema.segment().take() {
-                self.terminator.terminate(seg);
+                self.terminator
+                    .terminate(seg, schema.types(), schema.properties());
             }
         }
     }

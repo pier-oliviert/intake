@@ -32,7 +32,7 @@ enum Mutation {
 
 impl From<Mutation> for Event {
     fn from(mutation: Mutation) -> Self {
-        use std::collections::BTreeMap;
+        use std::collections::HashMap;
 
         match mutation {
             Mutation::Insert {
@@ -40,7 +40,7 @@ impl From<Mutation> for Event {
                 values,
                 types,
             } => {
-                let mut map = BTreeMap::new();
+                let mut map = HashMap::new();
                 for (i, column) in columns.into_iter().enumerate() {
                     map.insert(column, Value::from((&types[i], &values[i])));
                 }

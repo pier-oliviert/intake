@@ -6,7 +6,7 @@
 // The conversion and rules of getting from the replications stream into the event's generic struct
 // is up to each source.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use yaml_rust::Yaml;
@@ -19,7 +19,7 @@ mod terminator;
 
 pub(crate) mod segment;
 
-pub(crate) type Values = BTreeMap<String, Value>;
+pub(crate) type Values = HashMap<String, Value>;
 
 #[derive(Debug, Clone)]
 pub enum Event {
