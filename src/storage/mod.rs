@@ -2,3 +2,5 @@
 // to cloud storage (S3, Google Cloud, Minio, etc.)
 //
 // Its main focus is downloading and uploading files as requested by other sub-system.
+
+pub(crate) trait Expeditor {}

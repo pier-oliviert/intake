@@ -33,11 +33,12 @@ async fn main() {
     if config.len() != 1 {
         panic!("YAML configuration requires the file to contain exactly 1 top level object(found: {} top level objects).", config.len());
     }
+    let config = &config[0];
 
-    let sender = events::listen();
+    let sender = events::listen(config);
 
     loop {
-        let (mut src, failure) = source::initialize(&config[0]["source"]).await.unwrap();
+        let (mut src, failure) = source::initialize(&config["source"]).await.unwrap();
 
         // Cloning is needed here for the sender because the loop will re-execute and
         // the sender will be moved after the first iteration.
