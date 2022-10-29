@@ -48,6 +48,16 @@ impl Default for Value {
     }
 }
 
+impl From<&Value> for parquet::basic::Type {
+    fn from(v: &Value) -> Self {
+        match v {
+            Value::Int64(_) => Self::INT64,
+            Value::Float(_) => Self::FLOAT,
+            Value::String(_) => Self::BYTE_ARRAY,
+        }
+    }
+}
+
 pub fn listen(config: &Yaml) -> mpsc::Sender<Event> {
     let (sender, mut receiver) = mpsc::channel(10);
     let mut segments = collection::new(config, sender.clone());
