@@ -47,12 +47,20 @@ impl TryFrom<(&str, &Values)> for Schema {
         use parquet::file::properties::WriterProperties;
         use parquet::schema::types::Type;
 
+        let mut fields = Vec::new();
+
         let properties = WriterProperties::builder().build();
-        let definition = Type::group_type_builder(tuple.0).build()?;
+        let mut definition = Type::group_type_builder(tuple.0);
+        for (key, value) in tuple.1.iter() {
+            let field = Type::primitive_type_builder(key, value.into());
+            fields.push(TypePtr::new(field.build()?));
+        }
+
+        definition = definition.with_fields(&mut fields);
 
         Ok(Schema {
             name: tuple.0.to_owned(),
-            types: TypePtr::new(definition),
+            types: TypePtr::new(definition.build()?),
             properties: WriterPropertiesPtr::new(properties),
             segment: None,
         })
@@ -76,5 +84,44 @@ impl Schema {
 
     pub(crate) fn segment(&mut self) -> &mut Option<Segment> {
         &mut self.segment
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Schema;
+    use crate::events::{Value, Values};
+    use parquet::basic::Type as PhysicalType;
+
+    #[test]
+    fn generate_schema_from_values() {
+        let mut values = Values::new();
+        values.insert("a string".into(), Value::String("something".into()));
+
+        let schema = Schema::try_from(("my_index", &values)).unwrap();
+        let types = schema.types().get_fields().to_owned();
+        assert_eq!(schema.types().is_group(), true);
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            types.first().unwrap().get_physical_type(),
+            PhysicalType::BYTE_ARRAY
+        );
+    }
+
+    #[test]
+    fn each_values_are_represented() {
+        let mut values = Values::new();
+        values.insert("a string".into(), Value::String("something".into()));
+        values.insert("a number".into(), Value::Int64(981));
+        values.insert("a float".into(), Value::Float(198.83));
+
+        let schema = Schema::try_from(("my_index", &values)).unwrap();
+        let types = schema.types().get_fields().to_owned();
+
+        // This assert might be flakey as the order is an implementation
+        // details.
+        assert_eq!(types[2].get_physical_type(), PhysicalType::BYTE_ARRAY);
+        assert_eq!(types[1].get_physical_type(), PhysicalType::INT64);
+        assert_eq!(types[0].get_physical_type(), PhysicalType::FLOAT);
     }
 }
