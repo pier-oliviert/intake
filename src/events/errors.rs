@@ -2,6 +2,7 @@
 pub(crate) enum Error {
     ParquetError(String),
     FileError(String),
+    SegmentWithoutCache,
 }
 
 impl From<std::io::Error> for Error {
