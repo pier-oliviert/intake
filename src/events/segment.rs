@@ -5,7 +5,10 @@ use crate::events::{
     schema::Schema,
 };
 use parquet::errors::ParquetError;
-use parquet::file::{properties::WriterPropertiesPtr, writer::SerializedFileWriter};
+use parquet::file::{
+    properties::WriterPropertiesPtr,
+    writer::{SerializedFileWriter, SerializedRowGroupWriter},
+};
 use parquet::format::FileMetaData;
 use parquet::schema::types::TypePtr;
 use std::fs::File;
@@ -66,10 +69,13 @@ impl Segment {
         let filename = format!("./{}.parquet", self.uuid.as_hyphenated().to_string());
         let path = Path::new(&filename);
         let file = File::create(&path)?;
-        let mut writer = SerializedFileWriter::new(file, types, properties)?;
+        let mut writer = SerializedFileWriter::new(file, types.clone(), properties)?;
+        let mut group = writer.next_row_group()?;
 
-        Self::write(columns, &mut writer);
-        Ok(writer.close()?)
+        Self::write(columns, &mut group);
+        group.close()?;
+
+        Ok(writer.close().unwrap())
     }
 
     // Return whether the underlying cache is empty or not.
@@ -99,7 +105,51 @@ impl Segment {
 }
 
 impl Segment {
-    fn write(columns: Columns, writer: &mut SerializedFileWriter<File>) {
-        println!("Columns: {:?}", &columns);
+    fn write(columns: Columns, writer: &mut SerializedRowGroupWriter<File>) {
+        use crate::events::cache::Column;
+        use parquet::column::writer::ColumnWriter;
+        use parquet::data_type::ByteArray;
+
+        while let Ok(Some(mut col)) = writer.next_column() {
+            match col.untyped() {
+                ColumnWriter::Int64ColumnWriter(writer) => {
+                    let descriptor = writer.get_descriptor();
+                    let name = descriptor.name();
+                    let column = columns.get(name).unwrap();
+                    if let Column::Int64(collection) = column {
+                        writer
+                            .write_batch(
+                                collection.as_slice(),
+                                Some(&[descriptor.max_def_level()]),
+                                Some(&[descriptor.max_rep_level()]),
+                            )
+                            .unwrap();
+                    }
+                }
+                ColumnWriter::ByteArrayColumnWriter(writer) => {
+                    let descriptor = writer.get_descriptor();
+                    let name = descriptor.name();
+                    let column = columns.get(name).unwrap();
+                    if let Column::String(collection) = column {
+                        let values: Vec<ByteArray> = collection
+                            .iter()
+                            .map(|v| ByteArray::from(v.as_str()))
+                            .collect();
+                        writer
+                            .write_batch(
+                                values.as_slice(),
+                                Some(&[descriptor.max_def_level()]),
+                                Some(&[descriptor.max_rep_level()]),
+                            )
+                            .unwrap();
+                    }
+                }
+                _ => unimplemented!("Coming up soon."),
+            }
+
+            col.close().unwrap();
+        }
+
+        println!("Done writing columns");
     }
 }

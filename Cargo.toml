@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "3.2.6", features = ["derive"] }
-parquet = "25.0"
-arrow = "25.0"
+parquet = { git = "https://github.com/apache/arrow-rs" }
+arrow = { git = "https://github.com/apache/arrow-rs" }
 async-trait = "0.1.53"
 env_logger = "0.9.0"
 yaml-rust = "0.4"
