@@ -3,17 +3,24 @@ use crate::source::Error;
 use futures::{future, ready, Sink, StreamExt};
 use std::pin::Pin;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
 use tokio_postgres::NoTls;
 use tokio_postgres::{Client, CopyBothDuplex, SimpleQueryRow};
 use yaml_rust::Yaml;
 
+mod errors;
 mod event;
+mod state;
 
-pub(crate) struct Connection(Client);
+pub(crate) struct Connection(Client, Arc<Mutex<state::State>>);
 
 pub(crate) async fn initialize(config: &Yaml, sender: mpsc::Sender<Error>) -> Connection {
+    let state = state::retrieve(config["state"].as_str().expect("state to be a string"));
+    println!("State: {:?}", &state);
+
     let url = config["url"].as_str().unwrap();
+
     let (client, connection) = tokio_postgres::connect(url, NoTls).await.unwrap();
     println!("Spawning connection monitoring");
 
@@ -23,13 +30,7 @@ pub(crate) async fn initialize(config: &Yaml, sender: mpsc::Sender<Error>) -> Co
         }
     });
 
-    Connection(client)
-}
-
-impl From<bytes::Bytes> for crate::events::Event {
-    fn from(_: bytes::Bytes) -> Self {
-        Self::default()
-    }
+    Connection(client, Arc::new(Mutex::new(state)))
 }
 
 impl Connection {
@@ -43,47 +44,68 @@ impl Connection {
             .copy_both_simple::<bytes::Bytes>(&query)
             .await
             .unwrap();
-        let mut duplex_stream_pin = Box::pin(duplex_stream);
 
-        tokio::spawn(async move {
-            loop {
-                let event_res_opt = duplex_stream_pin.as_mut().next().await;
-                if event_res_opt.is_none() {
-                    break;
-                }
-                //if event_res_opt.is_none() { continue; }
-                let event_res = event_res_opt.unwrap();
-                if event_res.is_err() {
-                    continue;
-                }
-                let event = event_res.unwrap();
+        tokio::spawn(Self::ingest(
+            Box::pin(duplex_stream),
+            self.1.clone(),
+            sender,
+        ));
+    }
 
-                if event[0] == b'w' {
-                    // Data Change event are sent out to the channel so it can be processed.
-                    let events = event::from_json(&event[25..]).unwrap();
-                    let mut iterator = events.into_iter();
-                    while let Some(event) = iterator.next() {
-                        sender.send(event).await.unwrap();
-                    }
+    async fn ingest(
+        mut stream: Pin<Box<CopyBothDuplex<bytes::Bytes>>>,
+        state: Arc<Mutex<state::State>>,
+        sender: Sender<Event>,
+    ) {
+        loop {
+            let event_res_opt = stream.as_mut().next().await;
+            if event_res_opt.is_none() {
+                break;
+            }
+            let event_res = event_res_opt.unwrap();
+            if event_res.is_err() {
+                continue;
+            }
+            let event = event_res.unwrap();
+
+            if event[0] == b'w' {
+                let wal = &event[1..25];
+                let data = &event[25..];
+
+                state
+                    .lock()
+                    .expect("could not aquire lock for state")
+                    .start(wal)
+                    .unwrap();
+
+                let events = event::from_json(data).unwrap();
+                let mut iterator = events.into_iter();
+                while let Some(event) = iterator.next() {
+                    sender.send(event).await.unwrap();
                 }
-                // type: keepalive message
-                else if event[0] == b'k' {
-                    let last_byte = event.last().unwrap();
-                    let timeout_imminent = last_byte == &1;
-                    println!(
-                        "Got keepalive message:{:x?} @timeoutImminent:{}",
-                        event, timeout_imminent
-                    );
-                    if timeout_imminent {
-                        keepalive(&mut duplex_stream_pin).await;
-                    }
+
+                state
+                    .lock()
+                    .expect("could not aquire lock for state")
+                    .done(wal)
+                    .unwrap();
+            }
+            // type: keepalive message
+            else if event[0] == b'k' {
+                let last_byte = event.last().unwrap();
+                let timeout_imminent = last_byte == &1;
+                if timeout_imminent {
+                    keepalive(&mut stream, state.clone()).await;
                 }
             }
-        });
+        }
     }
 }
 
-async fn keepalive(stream: &mut Pin<Box<CopyBothDuplex<bytes::Bytes>>>) {
+async fn keepalive(
+    stream: &mut Pin<Box<CopyBothDuplex<bytes::Bytes>>>,
+    state: Arc<Mutex<state::State>>,
+) {
     use bytes::Bytes;
     use std::task::Poll;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -97,21 +119,18 @@ async fn keepalive(stream: &mut Pin<Box<CopyBothDuplex<bytes::Bytes>>>) {
         .try_into()
         .unwrap();
 
-    // see here for format details: https://www.postgresql.org/docs/10/protocol-replication.html
-    let mut data_to_send: Vec<u8> = vec![];
-    // Byte1('r'); Identifies the message as a receiver status update.
-    data_to_send.extend_from_slice(&[114]); // "r" in ascii
-                                            // The location of the last WAL byte + 1 received and written to disk in the standby.
-    data_to_send.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
-    // The location of the last WAL byte + 1 flushed to disk in the standby.
-    data_to_send.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
-    // The location of the last WAL byte + 1 applied in the standby.
-    data_to_send.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
-    // The client's system clock at the time of transmission, as microseconds since midnight on 2000-01-01.
-    //0, 0, 0, 0, 0, 0, 0, 0,
-    data_to_send.extend_from_slice(&time_since_2000.to_be_bytes());
-    // Byte1; If 1, the client requests the server to reply to this message immediately. This can be used to ping the server, to test if the connection is still healthy.
-    data_to_send.extend_from_slice(&[1]);
+    let mut data_to_send: Vec<u8> = vec![114]; // "r" in ascii
+
+    {
+        let state = state.lock().expect("unable to obtain lock on state");
+
+        // see here for format details: https://www.postgresql.org/docs/10/protocol-replication.html
+        data_to_send.extend_from_slice(&state.last_flushed());
+        data_to_send.extend_from_slice(&state.last_flushed());
+        data_to_send.extend_from_slice(&state.last_applied());
+        data_to_send.extend_from_slice(&time_since_2000.to_be_bytes());
+        data_to_send.extend_from_slice(&[1]);
+    }
 
     let buf = Bytes::from(data_to_send);
 
@@ -143,11 +162,16 @@ impl super::Client for Connection {
     async fn connect(&mut self, sender: Sender<Event>) {
         use tokio_postgres::SimpleQueryMessage;
 
-        let mut rows = self
-            .0
-            .simple_query("CREATE_REPLICATION_SLOT test1 TEMPORARY LOGICAL wal2json")
-            .await
-            .unwrap();
+        let query = format!(
+            "CREATE_REPLICATION_SLOT {} TEMPORARY LOGICAL wal2json",
+            self.1
+                .lock()
+                .expect("could not obtain lock for state")
+                .slot()
+        );
+        println!("Query: {}", &query);
+
+        let mut rows = self.0.simple_query(&query).await.unwrap();
 
         // There should only be 1 row that is returned for the replication
         // information. However, postgres will usually return more than 1;

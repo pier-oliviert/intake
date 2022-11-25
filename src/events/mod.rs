@@ -22,7 +22,7 @@ pub(crate) mod segment;
 pub(crate) type Values = HashMap<String, Value>;
 
 #[derive(Debug, Clone)]
-pub enum Event {
+pub(crate) enum Event {
     Insert(String, Values),
     Update(String, Values),
     Delete(String, Values),
@@ -58,7 +58,7 @@ impl From<&Value> for parquet::basic::Type {
     }
 }
 
-pub fn listen(config: &Yaml) -> mpsc::Sender<Event> {
+pub(crate) fn listen(config: &Yaml) -> mpsc::Sender<Event> {
     let (sender, mut receiver) = mpsc::channel(10);
     let mut segments = collection::new(config, sender.clone());
 
